@@ -1,0 +1,146 @@
+---
+title: "Analysis of Pikes Peak Runners"
+output: html_notebook
+---
+
+```{r}
+library(chron)
+
+females = read.csv("MA_Exer_PikesPeak_Females.txt",sep = "\t",fill=TRUE)
+males = read.csv("MA_Exer_PikesPeak_Males.txt",sep = "\t",fill=TRUE)
+
+#clean up female gun times
+females$Hometown = ifelse(!(substring(females$Gun.Tim, 1,1) %in% c(0:9)), paste0(females$Hometown, substring(females$Gun.Tim, 1,1)),females$Hometown)
+females$Gun.Tim = ifelse(!(substring(females$Gun.Tim, 1,1) %in% c(0:9)), trimws(substring(females$Gun.Tim, 2,nchar(females$Gun.Tim))),females$Gun.Tim)
+
+#combine data
+females$Gender = "Female"
+males$Gender = "Male"
+runners = rbind(females, males)
+
+# clean up net times
+runners$Net.Tim = trimws(runners$Net.Tim)
+runners$Net.Tim = ifelse(!(substring(runners$Net.Tim, nchar(runners$Net.Tim),nchar(runners$Net.Tim)) %in% c(0:9)), substring(runners$Net.Tim, 1,nchar(runners$Net.Tim)-1),runners$Net.Tim)
+runners$Net.Tim = times(ifelse(nchar(runners$Net.Tim) < 7, paste0("00:",runners$Net.Tim), paste0("0",runners$Net.Tim)))
+
+#clean up gun times
+runners$Gun.Tim = times(ifelse(nchar(runners$Gun.Tim) < 7, paste0("00:",runners$Gun.Tim), paste0("0",runners$Gun.Tim)))
+
+#clean up pace times
+runners$Pace = times(ifelse(nchar(runners$Pace) < 5, paste0("00:0",runners$Pace), paste0("00:",runners$Pace)))
+
+#calculate division
+#runners$Division = sub(".*/", "", runners$Div.Tot) 
+#apparently Div.Tot is wildly inaccurate, so calculate it based on the age instead
+calc_division = function(age, gender) {
+  if (is.na(age) || age < 1 || age == "" || age == "NA") {return(NA)}
+  if (age <= 14) {return(paste0(gender,"0-14"))}
+  if (age <= 19) {return(paste0(gender,"15-19"))}
+  return(paste0(gender, substr(age, 1, 1), "0-", substr(age, 1, 1), "9"))
+}
+runners[runners$Gender == "Female",]$Division = sapply(runners[runners$Gender == "Female",]$Ag, calc_division, "F")
+runners[runners$Gender == "Male",]$Division = sapply(runners[runners$Gender == "Male",]$Ag, calc_division, "M")
+
+```
+
+
+1. What are the mean, median, mode, and range of the race results for all racers by gender?
+
+```{r}
+library(magrittr)
+library(dplyr)
+library(kableExtra)
+
+get_mode = function(x) {
+   uniqv <- unique(x)
+   uniqv[which.max(tabulate(match(x, uniqv)))]
+}
+
+summarize = runners %>% 
+  group_by(Gender) %>% 
+  summarize(Mean = mean(Net.Tim), Median = median(Net.Tim), Mode = get_mode(Net.Tim), Min = min(Net.Tim), Max=max(Net.Tim), Range =max(Net.Tim)-min(Net.Tim), .groups = "drop_last")
+
+summarize %>% 
+  kbl(caption = "Summary of Race Results by Gender") %>%
+  kable_classic(html_font = "Cambria")
+```
+
+2. Analyze the difference between gun and net time race results.
+
+```{r}
+library(tidyverse)
+#exploration
+runners$Dif.Tim = runners$Gun.Tim - runners$Net.Tim
+summary(runners$Dif.Tim)
+print(aggregate(runners$Dif.Tim, list(runners$Gender), mean)) #females had closer times on average
+#number of people in the group does not appear to matter
+ggplot(aggregate(runners$Dif.Tim, list(as.integer(sub(".*/", 0, runners$Div.Tot))), mean), aes(x=Group.1, y=x)) +
+  geom_point() +
+  theme_bw()
+aggregate(runners$Dif.Tim, list(runners$Division), mean)
+
+#output results
+timediff = runners %>% 
+  group_by(Gender) %>% 
+  summarize(Mean = mean(Dif.Tim), Median = median(Dif.Tim), Min = min(Dif.Tim), Max=max(Dif.Tim), .groups = "drop_last")
+timediff = timediff %>% add_row(Gender = "Combined", Mean = mean(runners$Dif.Tim), Median = median(runners$Dif.Tim), Min = min(runners$Dif.Tim), Max=max(runners$Dif.Tim))
+
+timediff %>% 
+  kbl(caption = "Difference between Gun and Net Time") %>%
+  kable_classic(html_font = "Cambria")
+
+```
+
+
+3. How much time separates Chris Doe from the top 10 percentile of racers of the same division?
+
+```{r}
+library(ggplot2)
+library("ggrepel")
+
+name ="Chris Doe"
+individual = runners[runners$Name == name,]
+div = runners[runners$Division == individual$Division,]
+div_10percentile = quantile(div$Net.Tim, c(.10), na.rm = TRUE)
+
+mnt <- seq(30, 100, 10)
+ggplot(data = div, aes(x=Place, y=Net.Tim)) + 
+  geom_point(color = "grey") + 
+  geom_point(data = individual, color = "blue", size = 2.5) +
+  geom_text_repel(data = individual, aes(label = Name), size = 3.5, point.padding = unit(0.3, "lines")) +
+  geom_hline(yintercept = div_10percentile, linetype="dashed") +
+  annotate(geom="text", x=1225, y=div_10percentile+.001, size = 3, label="10th Percentile") +
+  labs(x = 'Place', y = "Net Time (Min)", title = sprintf("%s Division Race Results", individual$Division), subtitle = sprintf("%s was %s away from the top 10 percentile of racers in his division (%s) with a time of %s.", name, individual$Net.Tim-div_10percentile, div_10percentile, individual$Net.Tim)) +
+  scale_y_continuous(breaks = mnt/(24*60), labels = sprintf("%02d:00", mnt)) + #in chron a day is 1 so one hour is 1/24
+  theme_bw() +
+  theme(plot.subtitle = element_text(size = 9))
+```
+
+4. Compare the race results of each division.
+
+```{r}
+library(formattable)
+divsummary = runners %>% 
+  filter(!is.na(Division)) %>%
+  group_by(Gender, Division) %>% 
+  summarize(Count = n(), Average = mean(Net.Tim), Minimum = min(Net.Tim), Maximum=max(Net.Tim), "Best Place"=min(Place), .groups = "drop_last")
+
+unit.scale = function(x) (x - min(x)) / (max(x) - min(x))
+formattable(divsummary,
+            align =c("l","l","r","r","r","r","r"),
+            list(Division = formatter("span", style = ~ style(font.weight = "bold", color = ifelse(`Gender` == "Female", "grey", "black"))),
+                 Gender = FALSE,
+                 Average = color_bar(color="lightblue", unit.scale),
+                 `Best Place` = formatter("span", x ~ icontext(ifelse(x == 1, "star", " "), x)))
+)
+
+ggplot(divsummary, fill=Gender) + 
+  geom_segment(aes(x=Division, xend=Division, y=Minimum, yend=Maximum, color=Gender), size = 3) +
+  geom_point(aes(x=Division, y = Average), size = 2) +
+  labs(x = 'Division', y = "Net Time (Min)", title = "Race Results by Division", subtitle = "Average and Range of Net Time broken down by Division") +
+  scale_y_continuous(breaks = mnt/(24*60), labels = sprintf("%02d:00", mnt)) + #in chron a day is 1 so one hour is 1/24
+  theme_bw() +
+  theme(axis.text.x=element_text(angle=90))
+```
+
+
